@@ -1,0 +1,406 @@
+  DATAS SEGMENT
+    num1 DB 3 DUP(0)         ; 存储三位数字
+    result DB 3 DUP(0)       ; 存储减1后的三位结果
+    NEWS_1 DB 0DH,0AH, 'CLASS/STUDENT INFO REMOVED',0DH,0AH,'$'  
+    NEWS_4 DB 0DH,0AH, 'Contdown is over Thanks to use ',0DH,0AH,'$' 
+    NEWS_2 DB 0DH,0AH, '8259 is work ',0DH,0AH,'$' 
+    NEWS_3 DB 0DH,0AH, '8255 is work ',0DH,0AH,'$' 
+    msg_1 DB 0DH,0AH, 'Please enter three digits.',0DH,0AH,'$'
+    msg_2 DB 0DH,0AH, 'Press s to pause,d to continue,space to exit.',0DH,0AH,'$'
+    msg_3 DB 0DH,0AH, 'Contdown pause,press d to continue,space to exit.',0DH,0AH,'$'
+    msg_4 DB 0DH,0AH, 'Contdown continue,press s to pause,space to exit.',0DH,0AH,'$'
+    CSREG DW ?        ; 保存原中断向量段地址
+    IPREG DW ?        ; 保存原中断向量偏移地址
+    
+    SEG_TABLE DB 3FH, 06H, 5BH, 4FH, 66H, 6DH, 7DH, 07H, 7FH, 6FH ; 0~9 段码表
+    
+DATAS ENDS
+
+STACKS SEGMENT
+    DB 256 DUP(?) ; 堆栈定义
+STACKS ENDS
+
+
+CODES SEGMENT
+    ASSUME CS:CODES, DS:DATAS, SS:STACKS
+
+START:
+    MOV AX, DATAS
+    MOV DS, AX
+	MOV AX, STACKS    ; 堆栈段
+	MOV SS, AX
+    MOV SP, 256
+    
+    MOV DX, OFFSET msg_1     
+    MOV AH, 9
+    INT 21H
+
+
+
+	CALL Input               ; 调用输入程序
+	
+    MOV DX, OFFSET msg_2     
+    MOV AH, 9
+    INT 21H
+
+	CALL INIT8255
+	
+	; 保存原IRQ3中断向量
+    CLI
+    MOV AX, 350BH ;AH ->35H read the 向量  AL->0BH  读谁的IRQ3的中断类型号
+    INT 21H
+    MOV AX, ES	;当前的中断向量->ES(段)
+    MOV CSREG, AX;BX-->偏移地址
+    MOV IPREG, BX
+	
+    ; 设置新的中断向量
+    MOV AX, CS
+    MOV DS, AX
+    MOV DX, OFFSET SERVICE
+    MOV AX, 250BH
+    INT 21H
+
+    ; 打开 IRQ3 中断
+    IN AL, 21H
+    AND AL, 11110111B
+    OUT 21H, AL
+
+	CALL INIT8253
+
+HEAD:	
+
+	
+    CALL DISPLAY
+	; 检测键盘输入
+    MOV AH, 01H ; 检测键盘缓冲区
+    INT 16H
+    JZ HEAD ; 无键按下继续循环  
+    ;JMP EXIT
+    ;MOV AH, 01H
+    CMP AL, 's'  ;s
+    JE Stop
+    CMP AL,'d'
+	JE BACK
+    CMP AL,20H
+    JE EXIT
+    JMP HEAD
+
+Stop:
+	
+    STI
+    MOV BL, 11110111B
+    NOT BL ;00001000B
+    IN AL, 21H ;1111 0111B
+    OR AL, BL;->1111 1111B
+    OUT 21H, AL
+    
+    MOV DX, OFFSET msg_3    
+    MOV AH, 9
+    INT 21H
+
+    MOV AH,0CH
+    INT 21H
+    JMP HEAD
+	
+BACK:
+  	;打开 IRQ3 中断
+	;CLI
+    IN AL, 21H
+    AND AL, 11110111B
+    OUT 21H, AL
+
+    MOV DX, OFFSET msg_4    
+    MOV AH, 9
+    INT 21H
+
+    MOV AH,0CH
+    INT 21H
+	JMP HEAD
+
+
+EXIT:
+	CLI
+    ; 恢复中断掩码
+    MOV BL, 11110111B
+    NOT BL ;00001000B
+    IN AL, 21H ;1111 0111B
+    OR AL, BL;->1111 1111B
+    OUT 21H, AL
+    
+    ; 恢复原中断向量
+    ;DS->段地址 DX->偏移地址
+    MOV DX, IPREG
+    MOV AX, CSREG
+    MOV DS, AX
+    MOV AH, 25H
+    MOV AL, 0BH
+    INT 21H
+
+    MOV AH, 4CH
+    INT 21H
+
+
+DISPLAY PROC
+    CLI
+	MOV AX,DATAS
+	MOV DS,AX
+    MOV SI, OFFSET result
+    LEA BX, SEG_TABLE 
+    MOV AL, [SI]
+	XLAT    
+    MOV DX, 288H 
+    OUT DX, AL
+
+    ; 控制 C 口选择第3个数码管
+    MOV DX, 28AH
+    MOV AL, 04H; 0100B(PC3~PC0)
+    OUT DX, AL
+    
+    ; 短延时
+    CALL DELAY
+    CALL CLOSE
+    
+    LEA BX, SEG_TABLE 
+    MOV AL, [SI+1]
+	XLAT    
+    MOV DX, 288H 
+    OUT DX, AL
+
+    ; 控制 C 口选择第2个数码管 (PC1=1, PC0=0)
+    MOV DX, 28AH
+    MOV AL, 02H; 0010B
+    OUT DX, AL
+
+    ; 短延时
+    CALL DELAY
+    CALL CLOSE
+    
+    LEA BX, SEG_TABLE 
+    MOV AL, [SI+2]
+	XLAT
+    MOV DX, 288H ; A 口段码
+    OUT DX, AL
+
+    ; 控制 C 口选择第1个数码管 (PC1=0, PC0=1)
+    MOV DX, 28AH
+    MOV AL, 01H; 0001B
+    OUT DX, AL
+
+    ; 短延时
+    CALL DELAY
+    CALL CLOSE
+    STI
+	RET
+	
+DISPLAY ENDP
+
+
+
+DELAY PROC
+	 CLI
+    ; 简单延时
+    MOV CX, 3000
+WAIT_LOOP:
+    LOOP WAIT_LOOP
+	STI             ; 启用中断
+    RET
+DELAY ENDP
+
+CLOSE PROC
+    ; 关闭数码管
+    MOV DX, 28AH
+    MOV AL, 00H
+    OUT DX, AL
+    RET
+CLOSE ENDP
+
+
+SERVICE PROC
+
+	CLI
+	; 1. 保存现场 (保存寄存器和段寄存器)
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH SI
+    PUSH DI
+    PUSH BP
+    PUSH DS
+    PUSH ES
+		
+	;2.逻辑减一
+	CALL SubtractOne
+	;加载数据段
+	MOV AX,DATAS
+	MOV DS,AX
+
+    ;MOV DX, OFFSET NEWS_2    
+    ;MOV AH, 09H
+    ;INT 21H
+	
+	; 3. 发送中断结束 (EOI) 信号给 8259A 中断控制器
+    MOV AL, 20H
+    OUT 20H, AL
+		
+		
+	; 4. 恢复现场 (恢复寄存器和段寄存器)
+    POP ES
+    POP DS
+    POP BP
+    POP DI
+    POP SI
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+
+	STI
+    ; 5. 使用IRET返回
+    IRET
+
+SERVICE ENDP
+
+
+
+Input PROC
+    MOV CX, 3                ; 我们要输入3位数字 
+	MOV SI, OFFSET num1 
+
+INPUT_LOOP:
+    MOV AH, 01H              ; 调用 INT 21H，AH=01H，读取一个字符
+    INT 21H
+    SUB AL, 30H              ; 将字符转换为数值 ('0' - '9')
+    MOV [SI], AL             ; 将数值存入 num1
+    INC SI                   ; 指向 num1 的下一个位置
+    LOOP INPUT_LOOP          ; 循环读取3位数字 
+    RET
+
+Input ENDP 
+
+;280H~287H
+INIT8253 PROC
+
+	;CNT0：
+	MOV DX,283H
+	MOV AL,00110110B
+	OUT DX,AL
+	MOV AX,1000
+
+	MOV DX,280H
+	OUT DX,AL
+	MOV AL,AH
+	OUT DX,AL
+	
+	;CNT1
+	MOV DX,283H
+	MOV AL,01110100B
+	OUT DX,AL
+	MOV AX,1000
+	MOV DX,281H
+	OUT DX,AL
+	MOV AL,AH
+	OUT DX,AL
+	RET
+
+INIT8253 ENDP
+	
+
+;288H~28FH
+INIT8255 PROC
+
+	; 初始化 8255A 控制字：A 口输出，C 口控制
+    MOV DX, 28BH
+    MOV AL, 80H ; 模式 0，A 输出，C 输出
+    OUT DX, AL
+	RET
+INIT8255 ENDP
+
+
+; 中断服务程序：将最高位减1，并将结果存储到寄存器
+SubtractOne PROC
+
+	MOV SI, OFFSET num1      ; SI 指向 num1
+	MOV CL, [SI+2]             ; 加载第三个数字
+	CMP CL, 0
+    JE SHIWEI
+    
+    DEC CL                   ; 减1
+    MOV [num1+2], CL
+    MOV [result+2], CL       ; 存储减后的结果到 result+2
+    
+    MOV BL, [SI+1]
+    MOV AL, [SI]
+    MOV [result+1], BL
+    MOV [result], AL
+    RET
+    
+SHIWEI:
+	
+	MOV SI, OFFSET num1      ; SI 指向 num1
+	MOV BL, [SI+1]             ; 加载第二个数字
+	CMP BL, 0
+	JE BAIWEI
+	
+    DEC BL 
+    MOV [num1+1], BL
+    MOV [result+1], BL
+	
+	MOV AL, [SI]
+	MOV [result], AL
+	
+	
+	MOV CL, 09H
+	MOV [num1+2], CL
+	MOV [result+2], CL
+    RET
+    
+BAIWEI:    
+    
+    MOV SI, OFFSET num1      ; SI 指向 num1
+    MOV AL, [SI]             ; 加载第一个数字
+    CMP AL, 0
+    JE THEEND
+    
+    DEC AL                   ; 减1
+    MOV [num1], AL
+	MOV [result], AL
+    
+    MOV BL, 09H
+	MOV [num1+1], BL
+	MOV [result+1], BL
+	
+	MOV CL, 09H
+	MOV [num1+2], CL
+	MOV [result+2], CL
+    RET
+    
+THEEND:
+
+
+	MOV [result+2], 0
+	MOV [result+1], 0
+      MOV [result], 0
+    
+	MOV DX, OFFSET NEWS_1     
+      MOV AH, 9
+      INT 21H
+
+	MOV DX, OFFSET NEWS_4     
+      MOV AH, 9
+      INT 21H
+
+
+    MOV BL, 11110111B
+    NOT BL ;00001000B
+    IN AL, 21H ;1111 0111B
+    OR AL, BL;->1111 1111B
+    OUT 21H, AL
+
+	
+	RET  
+SubtractOne ENDP
+
+
+CODES ENDS
+    END START
